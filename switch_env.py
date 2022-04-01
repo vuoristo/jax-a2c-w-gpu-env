@@ -178,16 +178,26 @@ def dummy_fn(
 
 
 if __name__ == '__main__':
+    rngkey = jrandom.PRNGKey(0)
     wall_fn = get_wall_fn(0)
+    free_switches = (
+        (2, 1, 1),
+        (2, 1, 3),
+    )
+    reward_switches = (
+        (4, 1, 5),
+        (4, 1, 7),
+    )
     pos_i_loc = (3, 3, 3)
     neg_i_loc = (3, 3, 1)
-    switch_info = {
-        # s loc      i loc     r    t
-        ((2, 1, 1), pos_i_loc, 1.0, 0.0),
-        ((2, 1, 3), neg_i_loc, -1.0, 0.0),
-        ((4, 1, 5), pos_i_loc, 1.0, 1.0),
-        ((4, 1, 7), neg_i_loc, -1.0, 1.0),
-    }
+    pos_index = int(jrandom.bernoulli(rngkey, 0.5))
+    neg_index = 1 - pos_index
+    switch_info = (
+        (free_switches[pos_index], pos_i_loc, 0.0, 0.0),
+        (free_switches[neg_index], neg_i_loc, 0.0, 0.0),
+        (reward_switches[pos_index], pos_i_loc, 1.0, 1.0),
+        (reward_switches[neg_index], neg_i_loc, -1.0, 1.0),
+    )
     switch_fn = get_switch_fn(0)
     layer_fns = [
         agent_fn,
@@ -199,7 +209,6 @@ if __name__ == '__main__':
     ]
     step_fn = get_step_env(layer_fns)
     s = State(GRID_LAYOUT, 0.0, 0.0, switch_info)
-    rngkey = jrandom.PRNGKey(0)
     print(s)
     action = 0
     while True:
