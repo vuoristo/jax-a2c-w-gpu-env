@@ -34,7 +34,7 @@ ActionType = int
 RewardType = chex.Scalar
 TerminalType = chex.Scalar
 
-ResetFnType = Callable[[], State]
+ResetFnType = Callable[[SwitchInfo], State]
 StepFnType = Callable[[KeyType, State, ActionType], State]
 LayerFnType = Callable[[KeyType, State, State, ActionType, int], State]
 
@@ -198,7 +198,7 @@ def dummy_fn(
     return next_state
 
 
-def get_switch_env() -> tuple[ResetFnType, LayerFnType]:
+def get_switch_env() -> tuple[ResetFnType, StepFnType]:
     def reset_fn(switch_info: SwitchInfo) -> State:
         return State(GRID_LAYOUT, 0.0, 0.0, switch_info)
     wall_fn = get_wall_fn(0)
