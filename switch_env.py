@@ -17,6 +17,18 @@ State = collections.namedtuple(
     )
 )
 
+
+SwitchInfo = collections.namedtuple(
+    'SwitchInfo',
+    (
+        'free_positive_switch',
+        'free_negative_switch',
+        'positive_switch',
+        'negative_switch',
+    )
+
+)
+
 KeyType = chex.Array
 ActionType = int
 RewardType = chex.Scalar
@@ -186,9 +198,26 @@ def dummy_fn(
     return next_state
 
 
-if __name__ == '__main__':
-    rngkey = jrandom.PRNGKey(0)
+def get_switch_env() -> tuple[ResetFnType, LayerFnType]:
+    def reset_fn(switch_info: SwitchInfo) -> State:
+        return State(GRID_LAYOUT, 0.0, 0.0, switch_info)
     wall_fn = get_wall_fn(0)
+    switch_fn = get_switch_fn(0)
+    layer_fns = [
+        agent_fn,
+        wall_fn,
+        switch_fn,
+        dummy_fn,
+        dummy_fn,
+        dummy_fn,
+    ]
+    step_fn = get_step_env(layer_fns)
+    return reset_fn, step_fn
+
+
+def get_random_switch_info(
+    rngkey: KeyType,
+) -> SwitchInfo:
     free_switches = (
         (2, 1, 1),
         (2, 1, 3),
@@ -207,17 +236,14 @@ if __name__ == '__main__':
         (reward_switches[pos_index], pos_i_loc, 1.0, 1.0),
         (reward_switches[neg_index], neg_i_loc, -1.0, 1.0),
     )
-    switch_fn = get_switch_fn(0)
-    layer_fns = [
-        agent_fn,
-        wall_fn,
-        switch_fn,
-        dummy_fn,
-        dummy_fn,
-        dummy_fn,
-    ]
-    step_fn = get_step_env(layer_fns)
-    s = State(GRID_LAYOUT, 0.0, 0.0, switch_info)
+    return switch_info
+
+
+if __name__ == '__main__':
+    rngkey = jrandom.PRNGKey(0)
+    reset_env, step_env = get_switch_env()
+    switch_info = get_random_switch_info(rngkey)
+    s = reset_env(switch_info)
     print(s)
     action = 0
     while True:
@@ -226,5 +252,5 @@ if __name__ == '__main__':
             action = int(action)
         except:
             break
-        s = step_fn(rngkey, s, action)
+        s = step_env(rngkey, s, action)
         print(s)
