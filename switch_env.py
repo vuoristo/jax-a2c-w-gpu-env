@@ -54,11 +54,12 @@ def agent_fn(
     a_to_move = jnp.array([[0, -1], [1, 0], [0, 1], [-1, 0], [0, 0]])
     layer = in_state[layer_index]
     grid_shape = layer.shape
-    loc = jnp.concatenate(jnp.where(layer == 1, size=1))
-    new_loc = jnp.clip(loc + a_to_move[shift_action],
-                        jnp.array((0, 0)), jnp.array(grid_shape))
-    new_layer = layer.at[loc[0], loc[1]].set(0.0).at[
-                        new_loc[0], new_loc[1]].set(1.0)
+    locs = jnp.stack(jnp.where(layer == 1), axis=1)
+    shift_fn = lambda l: jnp.clip(l + a_to_move[shift_action],
+                       jnp.array((0, 0)), jnp.array(grid_shape))
+    new_locs = jax.vmap(shift_fn)(locs)
+    new_layer = layer.at[locs[:, 0], locs[:, 1]].set(0.0)
+    new_layer = new_layer.at[new_locs[:, 0], new_locs[:, 1]].set(1.0)
     new_state = in_state.at[layer_index].set(new_layer)
     return new_state, 0.0, 0.0
 
