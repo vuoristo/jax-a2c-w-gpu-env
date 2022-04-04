@@ -218,17 +218,17 @@ def get_switch_env() -> tuple[ResetFnType, StepFnType]:
 def get_random_switch_info(
     rngkey: KeyType,
 ) -> SwitchInfo:
-    free_switches = (
+    free_switches = jnp.array((
         (2, 1, 1),
         (2, 1, 3),
-    )
-    reward_switches = (
+    ))
+    reward_switches = jnp.array((
         (4, 1, 5),
         (4, 1, 7),
-    )
+    ))
     pos_i_loc = (3, 3, 3)
     neg_i_loc = (3, 3, 1)
-    pos_index = int(jrandom.bernoulli(rngkey, 0.5))
+    pos_index = jrandom.bernoulli(rngkey, 0.5).astype(jnp.int32)
     neg_index = 1 - pos_index
     switch_info = (
         (free_switches[pos_index], pos_i_loc, 0.0, 0.0),
