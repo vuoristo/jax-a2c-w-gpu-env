@@ -8,6 +8,7 @@ import jax
 import jax.random as jrandom
 import jax.numpy as jnp
 import haiku as hk
+import rlax
 
 import switch_env
 from haiku_networks import torso_network
@@ -29,6 +30,15 @@ Trajectory = collections.namedtuple(
         'action_tm1',
         'logits_tm1',
         'env_state',
+    ]
+)
+
+LossLog = collections.namedtuple(
+    'LossLog', [
+        'pi_loss',
+        'baseline_loss',
+        'entropy',
+        'advantage',
     ]
 )
 
@@ -145,6 +155,37 @@ def rollout(
     return traj
 
 
+def surr_loss(
+    theta: chex.Array,
+    trajs: Trajectory,
+    ent_coef: chex.Scalar,
+    gamma: chex.Scalar,
+    vf_coef: chex.Scalar,
+    apply_theta_fn: Any,
+) -> Tuple[chex.Scalar, LossLog]:
+    rewards = trajs.env_state.reward[:, 1:]
+    discounts = (1.0 - trajs.env_state.terminal[:, 1:]) * gamma
+    agent_output = jax.vmap(apply_theta_fn, (None, 0))(theta, trajs)
+    value = agent_output.value
+    logits = agent_output.logits
+    v_t = value[:, 1:]
+    v_tm1 = value[:, :-1]
+    returns = jax.lax.stop_gradient(jax.vmap(rlax.lambda_returns)(
+        rewards, discounts, v_t, jnp.broadcast_to(1.0, rewards.shape)))
+    advantage = returns - jax.lax.stop_gradient(v_tm1)
+    actions = trajs.action_tm1[:, 1:]
+    logpi = jax.nn.log_softmax(logits[:, :-1])
+    logpi_a = rlax.batched_index(logpi, actions)
+    pi_loss = -jnp.mean(advantage * logpi_a)
+    baseline_loss = 0.5 * jnp.mean(jnp.square(returns - v_tm1))
+    pi = jax.nn.softmax(logits[:, :-1])
+    entropy = jnp.sum(-pi * logpi, axis=-1)
+    ent_loss = -jnp.mean(entropy)
+    total_loss = pi_loss + vf_coef * baseline_loss + ent_coef * ent_loss
+    log = LossLog(pi_loss, baseline_loss, -ent_loss, advantage)
+    return total_loss, log
+
+
 def trainable(
     config: Dict,
     reporter: Any,
@@ -185,6 +226,14 @@ def trainable(
         num_envs=num_parallel_envs,
     )
     trajs = rollout_fn(k2, theta, actor_output)
+    loss_fn = functools.partial(
+        surr_loss,
+        ent_coef=config['ent_coef'],
+        gamma=config['gamma'],
+        vf_coef=config['vf_coef'],
+        apply_theta_fn=apply_theta,
+    )
+    loss = loss_fn(theta=theta, trajs=trajs)
 
 
 
@@ -200,8 +249,13 @@ if __name__ == '__main__':
             'head_layers': (),
             'num_actions': 4,
         },
-        'num_parallel_envs': 1,
+        'num_parallel_envs': 7,
         'H': 10,
+
+        'vf_coef': 0.5,
+        'ent_coef': 0.01,
+        'gamma': 0.99,
+
         'stop_steps': 1_000,
         'seed': 0,
     }
