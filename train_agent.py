@@ -23,8 +23,8 @@ AgentOutput = collections.namedtuple(
     )
 )
 
-ActorOutput = collections.namedtuple(
-    'ActorOutput', [
+Trajectory = collections.namedtuple(
+    'Trajectory', [
         'rnn_state',
         'action_tm1',
         'logits_tm1',
@@ -95,7 +95,7 @@ class ActorCriticNet(hk.RNNCore):
 def sample_action(
     rngkey: KeyType,
     theta: Dict,
-    timestep: ActorOutput,
+    timestep: Trajectory,
     apply_theta_fn,
 ) -> tuple[AgentOutput, chex.Array]:
     agent_output = apply_theta_fn(theta, timestep)
@@ -103,16 +103,22 @@ def sample_action(
     return agent_output, a
 
 
+def select_by_terminal(s0, s):
+    inner_selector = lambda x0, x: jax.lax.select(s.terminal == 1.0
+                                                  * jnp.ones_like(x0), x0, x)
+    return jax.tree_map(inner_selector, s0, s)
+
+
 def rollout(
     key: KeyType,
     theta: Dict,
-    timestep: ActorOutput,
+    timestep: Trajectory,
     step_env_fn: switch_env.StepFnType,
     reset_env_fn: switch_env.ResetFnType,
     apply_theta_fn,
     H: int,
     num_envs: int,
-) -> ActorOutput:
+) -> Trajectory:
     sample_action_ = functools.partial(sample_action, apply_theta_fn=apply_theta_fn)
     def scan_fn(prev_state, _):
         k1, timestep = prev_state
@@ -124,10 +130,8 @@ def rollout(
         k1, k2 = jrandom.split(k1)
         keys = jrandom.split(k1, num_envs)
         s0 = jax.vmap(reset_env_fn)(keys, timestep.env_state.hidden)
-        selector = lambda x0, x: jax.lax.select(s.terminal == 1.0
-                                                * jnp.ones_like(x0), x0, x)
-        new_s = jax.tree_map(selector, s0, s)
-        ts = ActorOutput(
+        new_s = jax.vmap(select_by_terminal)(s0, s)
+        ts = Trajectory(
             rnn_state=agent_output.rnn_state,
             action_tm1=a,
             logits_tm1=agent_output.logits,
@@ -162,7 +166,7 @@ def trainable(
     keys = jrandom.split(k1, num_parallel_envs)
     env_output = jax.vmap(reset_env)(keys, switch_infos)
     agent_state = theta_initial_state_apply(None, num_parallel_envs)
-    actor_output = ActorOutput(
+    actor_output = Trajectory(
         rnn_state=agent_state,
         action_tm1=jnp.zeros((num_parallel_envs,), dtype=jnp.int32),
         logits_tm1=jnp.zeros((num_parallel_envs,
