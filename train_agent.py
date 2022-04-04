@@ -9,6 +9,7 @@ import jax.random as jrandom
 import jax.numpy as jnp
 import haiku as hk
 import rlax
+import optax
 
 import switch_env
 from haiku_networks import torso_network
@@ -156,7 +157,7 @@ def rollout(
 
 
 def surr_loss(
-    theta: chex.Array,
+    theta: Dict,
     trajs: Trajectory,
     ent_coef: chex.Scalar,
     gamma: chex.Scalar,
@@ -186,6 +187,22 @@ def surr_loss(
     return total_loss, log
 
 
+def sample_and_update(
+    key: KeyType,
+    theta: Dict,
+    actor_output: Trajectory,
+    opt_state,
+    rollout_fn: Callable,
+    grad_fn: Callable,
+    opt_update_fn: Callable,
+) -> tuple[Dict, LossLog]:
+    trajs = rollout_fn(key, theta, actor_output)
+    grad, logs = grad_fn(theta, trajs)
+    updates, new_opt_state = opt_update_fn(grad, opt_state)
+    new_theta = optax.apply_updates(theta, updates)
+    return new_theta, new_opt_state, logs
+
+
 def trainable(
     config: Dict,
     reporter: Any,
@@ -198,8 +215,35 @@ def trainable(
     _, theta_initial_state_apply = hk.without_apply_rng(
         hk.transform(lambda batch_size: ActorCriticNet(
             **config['network_kwargs']).initial_state(batch_size)))
-    k1, k2 = jrandom.split(k1)
     reset_env, step_env = switch_env.get_switch_env()
+    rollout_fn = functools.partial(
+        rollout,
+        step_env_fn=step_env,
+        reset_env_fn=reset_env,
+        apply_theta_fn=apply_theta,
+        H=config['H'],
+        num_envs=num_parallel_envs,
+    )
+    loss_fn = functools.partial(
+        surr_loss,
+        ent_coef=config['ent_coef'],
+        gamma=config['gamma'],
+        vf_coef=config['vf_coef'],
+        apply_theta_fn=apply_theta,
+    )
+    grad_fn = jax.grad(loss_fn, has_aux=True)
+    opt_kwargs = config['opt_kwargs'].copy()
+    learning_rate = opt_kwargs.pop('learning_rate')
+    opt_init_fn, opt_update_fn = optax.chain(
+        optax.scale_by_adam(**opt_kwargs),
+        optax.scale(-learning_rate),
+    )
+    sample_and_update_ = jax.jit(functools.partial(
+        sample_and_update,
+        rollout_fn=rollout_fn,
+        grad_fn=grad_fn,
+        opt_update_fn=opt_update_fn,
+    ))
     k1, k2 = jrandom.split(k1)
     keys = jrandom.split(k1, num_parallel_envs)
     switch_infos = jax.vmap(switch_env.get_random_switch_info)(keys)
@@ -216,24 +260,9 @@ def trainable(
     )
     k1, k2 = jrandom.split(k1)
     theta = init_theta(k2, actor_output)
+    opt_state = opt_init_fn(theta)
     k1, k2 = jrandom.split(k1)
-    rollout_fn = functools.partial(
-        rollout,
-        step_env_fn=step_env,
-        reset_env_fn=reset_env,
-        apply_theta_fn=apply_theta,
-        H=config['H'],
-        num_envs=num_parallel_envs,
-    )
-    trajs = rollout_fn(k2, theta, actor_output)
-    loss_fn = functools.partial(
-        surr_loss,
-        ent_coef=config['ent_coef'],
-        gamma=config['gamma'],
-        vf_coef=config['vf_coef'],
-        apply_theta_fn=apply_theta,
-    )
-    loss = loss_fn(theta=theta, trajs=trajs)
+    theta, opt_state, log = sample_and_update_(k2, theta, actor_output, opt_state)
 
 
 
@@ -255,6 +284,13 @@ if __name__ == '__main__':
         'vf_coef': 0.5,
         'ent_coef': 0.01,
         'gamma': 0.99,
+
+        'opt_kwargs': {
+            'learning_rate': 7E-4,
+            'b1': 0.9,
+            'b2': 0.999,
+            'eps': 1E-8,
+        },
 
         'stop_steps': 1_000,
         'seed': 0,
