@@ -173,26 +173,21 @@ def surr_loss(
     vf_coef: chex.Scalar,
     apply_theta_fn: Any,
 ) -> Tuple[chex.Scalar, LossLog]:
+    rnn_states = jax.tree_map(lambda t: t[:, 0], trajs.rnn_state)
+    learner_output = jax.vmap(apply_theta_fn, (None, 0, 0))(theta, trajs, rnn_states)
     rewards = trajs.env_state.reward[:, 1:]
-    discounts = (1.0 - trajs.env_state.terminal[:, 1:]) * gamma
-    agent_output = jax.vmap(apply_theta_fn, (None, 0))(theta, trajs)
-    value = agent_output.value
-    logits = agent_output.logits
-    v_t = value[:, 1:]
-    v_tm1 = value[:, :-1]
-    returns = jax.lax.stop_gradient(jax.vmap(rlax.lambda_returns)(
-        rewards, discounts, v_t, jnp.broadcast_to(1.0, rewards.shape)))
-    advantage = returns - jax.lax.stop_gradient(v_tm1)
-    actions = trajs.action_tm1[:, 1:]
-    logpi = jax.nn.log_softmax(logits[:, :-1])
-    logpi_a = rlax.batched_index(logpi, actions)
-    pi_loss = -jnp.mean(advantage * logpi_a)
-    baseline_loss = 0.5 * jnp.mean(jnp.square(returns - v_tm1))
-    pi = jax.nn.softmax(logits[:, :-1])
-    entropy = jnp.sum(-pi * logpi, axis=-1)
-    ent_loss = -jnp.mean(entropy)
-    total_loss = pi_loss + vf_coef * baseline_loss + ent_coef * ent_loss
-    log = LossLog(pi_loss, baseline_loss, -ent_loss, advantage)
+    discounts = trajs.env_state.terminal[:, 1:] * gamma
+    bootstrap_value = learner_output.value[:, -1]
+    returns = jax.vmap(rlax.discounted_returns)(rewards, discounts, bootstrap_value)
+    advantages = returns - learner_output.value[:, :-1]
+    masks = jnp.ones_like(trajs.env_state.terminal[:, :-1])
+    pg_loss = jax.vmap(rlax.policy_gradient_loss)(
+        learner_output.logits[:, :-1], trajs.action_tm1[:, 1:], advantages, masks)
+    ent_loss = jax.vmap(rlax.entropy_loss)(learner_output.logits[:, :-1], masks)
+    baseline_loss = 0.5 * jnp.mean(
+        jnp.square(learner_output.value[:, :-1] - jax.lax.stop_gradient(returns)) * masks, axis=1)
+    total_loss = jnp.mean(pg_loss + vf_coef * baseline_loss + ent_coef * ent_loss)
+    log = LossLog(pg_loss, baseline_loss, -ent_loss, advantages)
     return total_loss, log
 
 
