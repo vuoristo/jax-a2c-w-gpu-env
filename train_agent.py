@@ -114,10 +114,10 @@ def sample_action(
     return agent_output, a
 
 
-def select_by_terminal(s0, s):
-    inner_selector = lambda x0, x: jax.lax.select(s.terminal == 1.0
-                                                  * jnp.ones_like(x0), x0, x)
-    return jax.tree_map(inner_selector, s0, s)
+def reset_observation(new_s0, s):
+    selected = jax.lax.select(s.terminal == 1.0, new_s0.observation, s.observation)
+    new_s = s._replace(observation=selected)
+    return new_s
 
 
 def rollout(
@@ -140,8 +140,8 @@ def rollout(
         s = jax.vmap(step_env_fn)(keys, timestep.env_state, a)
         k1, k2 = jrandom.split(k1)
         keys = jrandom.split(k1, num_envs)
-        s0 = jax.vmap(reset_env_fn)(keys, timestep.env_state.hidden)
-        new_s = jax.vmap(select_by_terminal)(s0, s)
+        new_s0 = jax.vmap(reset_env_fn)(keys, timestep.env_state.hidden)
+        new_s = jax.vmap(reset_observation)(new_s0, s)
         ts = Trajectory(
             rnn_state=agent_output.rnn_state,
             action_tm1=a,

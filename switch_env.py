@@ -175,8 +175,8 @@ def get_switch_fn(
             o = o.at[i_loc[0]].set(new_indicator_layer)
             reward = reward + jax.lax.select(switch_hit, r, 0.0)
             terminal = terminal + jax.lax.select(switch_hit, t, 0.0)
-            next_state = (reward, terminal, o)
-            return next_state, 0
+            next_state_ = (reward, terminal, o)
+            return next_state_, 0
         (reward, terminal, next_obs), _ = jax.lax.scan(
             switch_setter,
             (0.0, 0.0, next_obs),
