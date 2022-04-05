@@ -70,17 +70,17 @@ class ActorCriticNet(hk.RNNCore):
         self._core = hk.ResetCore(core)
         self._head_layers = head_layers
 
-    def __call__(self, timesteps):
+    def __call__(self, timesteps, rnn_state):
         torso_net = torso_network(self._torso_type, **self._torso_kwargs)
         torso_output = torso_net(timesteps.env_state.observation)
-        rnn_state = timesteps.rnn_state
+        # Always choose the first rnn state from timesteps
         if self._use_rnn:
             core_input = jnp.concatenate([
                 hk.one_hot(timesteps.action_tm1, self._num_actions),
                 timesteps.env_state.reward[:, None],
                 torso_output
             ], axis=1)
-            should_reset = timesteps.first
+            should_reset = timesteps.env_state.terminal == 1.0
             core_output, next_state = hk.dynamic_unroll(
                 self._core, (core_input, should_reset), rnn_state)
         else:
@@ -107,10 +107,19 @@ def sample_action(
     rngkey: KeyType,
     theta: Dict,
     timestep: Trajectory,
+    rnn_state,
     apply_theta_fn,
 ) -> tuple[AgentOutput, chex.Array]:
-    agent_output = apply_theta_fn(theta, timestep)
+    # Add a dummy time dimension
+    timestep = jax.tree_map(lambda x: x[:, None], timestep)
+    agent_output = jax.vmap(apply_theta_fn, (None, 0, 0))(theta, timestep, rnn_state)
     a = hk.multinomial(rngkey, agent_output.logits, num_samples=1).squeeze(axis=-1)
+    # Remove dummy time dimension
+    agent_output = agent_output._replace(
+        logits=agent_output.logits.squeeze(1),
+        value=agent_output.value.squeeze(1),
+    )
+    a = a[:, 0]
     return agent_output, a
 
 
@@ -132,23 +141,23 @@ def rollout(
 ) -> Trajectory:
     sample_action_ = functools.partial(sample_action, apply_theta_fn=apply_theta_fn)
     def scan_fn(prev_state, _):
-        k1, timestep = prev_state
+        k1, ts = prev_state
         k1, k2 = jrandom.split(k1)
-        agent_output, a = sample_action_(k2, theta, timestep)
-        k1, k2 = jrandom.split(k1)
-        keys = jrandom.split(k1, num_envs)
-        s = jax.vmap(step_env_fn)(keys, timestep.env_state, a)
+        agent_output, a = sample_action_(k2, theta, ts, ts.rnn_state)
         k1, k2 = jrandom.split(k1)
         keys = jrandom.split(k1, num_envs)
-        new_s0 = jax.vmap(reset_env_fn)(keys, timestep.env_state.hidden)
+        s = jax.vmap(step_env_fn)(keys, ts.env_state, a)
+        k1, k2 = jrandom.split(k1)
+        keys = jrandom.split(k1, num_envs)
+        new_s0 = jax.vmap(reset_env_fn)(keys, ts.env_state.hidden)
         new_s = jax.vmap(reset_observation)(new_s0, s)
-        ts = Trajectory(
+        new_ts = Trajectory(
             rnn_state=agent_output.rnn_state,
             action_tm1=a,
             logits_tm1=agent_output.logits,
             env_state=new_s,
         )
-        return (k1, ts), ts
+        return (k1, new_ts), new_ts
     traj_pre = add_batch(timestep, 1)
     _, traj_post = jax.lax.scan(scan_fn, (key, timestep), jnp.arange(H))
     traj = jax.tree_multimap(lambda *xs: jnp.moveaxis(jnp.concatenate(xs), 0, 1),
@@ -208,10 +217,11 @@ def trainable(
     reporter: Any,
 ):
     num_parallel_envs = config['num_parallel_envs']
+    num_actions = config['network_kwargs']['num_actions']
     k1 = jrandom.PRNGKey(config['seed'])
     init_theta, apply_theta = hk.without_apply_rng(
-        hk.transform(lambda inputs: ActorCriticNet(
-            **config['network_kwargs'])(inputs)))
+        hk.transform(lambda *inputs: ActorCriticNet(
+            **config['network_kwargs'])(*inputs)))
     _, theta_initial_state_apply = hk.without_apply_rng(
         hk.transform(lambda batch_size: ActorCriticNet(
             **config['network_kwargs']).initial_state(batch_size)))
@@ -251,15 +261,19 @@ def trainable(
     keys = jrandom.split(k1, num_parallel_envs)
     env_output = jax.vmap(reset_env)(keys, switch_infos)
     agent_state = theta_initial_state_apply(None, num_parallel_envs)
-    actor_output = Trajectory(
+    timestep = Trajectory(
         rnn_state=agent_state,
         action_tm1=jnp.zeros((num_parallel_envs,), dtype=jnp.int32),
-        logits_tm1=jnp.zeros((num_parallel_envs,
-                              config['network_kwargs']['num_actions'])),
+        logits_tm1=jnp.zeros((num_parallel_envs, num_actions)),
         env_state=env_output,
     )
     k1, k2 = jrandom.split(k1)
-    theta = init_theta(k2, actor_output)
+    theta = init_theta(
+        k2,
+        # initialize only a single set of thetas
+        jax.tree_map(lambda x: x[:1], timestep),
+        jax.tree_map(lambda x: x[0], agent_state),
+    )
     opt_state = opt_init_fn(theta)
     k1, k2 = jrandom.split(k1)
     theta, opt_state, log = sample_and_update_(k2, theta, actor_output, opt_state)
@@ -274,12 +288,12 @@ if __name__ == '__main__':
                 'conv_layers': ((32, 3), (64, 3), (64, 3)),
                 'dense_layers': (129,),
             },
-            'use_rnn': False,
+            'use_rnn': True,
             'head_layers': (),
             'num_actions': 4,
         },
-        'num_parallel_envs': 7,
-        'H': 10,
+        'num_parallel_envs': 16,
+        'H': 11,
 
         'vf_coef': 0.5,
         'ent_coef': 0.01,
