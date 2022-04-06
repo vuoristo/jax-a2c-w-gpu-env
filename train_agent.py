@@ -43,6 +43,16 @@ LossLog = collections.namedtuple(
     ]
 )
 
+RolloutLog = collections.namedtuple(
+    'RolloutLog', [
+        'running_ep_reward',
+        'running_ep_len',
+        'final_ep_reward',
+        'final_ep_len',
+        'ep_count',
+    ]
+)
+
 
 class ActorCriticNet(hk.RNNCore):
     def __init__(
@@ -191,20 +201,53 @@ def surr_loss(
     return total_loss, log
 
 
+def collect_rollout_logs(
+    trajs: Trajectory,
+    rollout_log: RolloutLog,
+) -> RolloutLog:
+    def scan_fn(prev_log, inputs):
+        rews, terms = inputs
+        ep_lens = prev_log.running_ep_len + 1
+        ep_rews = prev_log.running_ep_reward + rews
+        ep_count = prev_log.ep_count + terms.sum()
+        finished_ep_lens = jax.lax.select(terms==1, ep_lens, jnp.zeros_like(ep_lens))
+        final_ep_lens = prev_log.final_ep_len + finished_ep_lens.sum()
+        finished_ep_rews = jax.lax.select(terms==1, ep_rews, jnp.zeros_like(ep_rews))
+        final_ep_rews = prev_log.final_ep_reward + finished_ep_rews.sum()
+        ep_lens = jax.lax.select(terms==1, jnp.zeros_like(ep_lens), ep_lens)
+        ep_rews = jax.lax.select(terms==1, jnp.zeros_like(ep_rews), ep_rews)
+        new_log = RolloutLog(
+            final_ep_reward=final_ep_rews,
+            final_ep_len=final_ep_lens,
+            running_ep_reward=ep_rews,
+            running_ep_len=ep_lens,
+            ep_count=ep_count,
+        )
+        return new_log, None
+    log, _ = jax.lax.scan(
+        scan_fn,
+        rollout_log,
+        (trajs.env_state.reward.transpose(), trajs.env_state.terminal.transpose())
+    )
+    return log
+
+
 def sample_and_update(
     key: KeyType,
     theta: Dict,
     actor_output: Trajectory,
     opt_state,
+    rollout_log: RolloutLog,
     rollout_fn: Callable,
     grad_fn: Callable,
     opt_update_fn: Callable,
-) -> tuple[Dict, LossLog]:
+) -> tuple[Dict, Dict, LossLog, RolloutLog]:
     trajs = rollout_fn(key, theta, actor_output)
-    grad, logs = grad_fn(theta, trajs)
+    rollout_log = collect_rollout_logs(trajs, rollout_log)
+    grad, loss_log = grad_fn(theta, trajs)
     updates, new_opt_state = opt_update_fn(grad, opt_state)
     new_theta = optax.apply_updates(theta, updates)
-    return new_theta, new_opt_state, logs
+    return new_theta, new_opt_state, loss_log, rollout_log
 
 
 def trainable(
@@ -270,8 +313,11 @@ def trainable(
         jax.tree_map(lambda x: x[0], agent_state),
     )
     opt_state = opt_init_fn(theta)
-    k1, k2 = jrandom.split(k1)
-    theta, opt_state, log = sample_and_update_(k2, theta, actor_output, opt_state)
+    rollout_log = RolloutLog(*jnp.zeros((2, num_parallel_envs)), 0, 0, 0)
+    for i in range(config['stop_steps']):
+        k1, k2 = jrandom.split(k1)
+        theta, opt_state, loss_log, rollout_log = sample_and_update_(
+            k2, theta, timestep, opt_state, rollout_log)
 
 
 
