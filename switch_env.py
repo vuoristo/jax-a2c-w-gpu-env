@@ -48,11 +48,11 @@ GRID_LAYOUT = jnp.array([
         [0, 0, 0, 0, 0, 0, 0, 0, 0],
     ],
     [ # Walls
-        [0, 0, 0, 0, 1, 0, 0, 0, 0],
-        [0, 0, 0, 0, 1, 0, 0, 0, 0],
         [0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 1, 0, 0, 0, 0],
-        [0, 0, 0, 0, 1, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0, 0, 0, 0, 0],
     ],
     [ # Switch
         [0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -200,6 +200,7 @@ def dummy_fn(
 
 def get_switch_env() -> tuple[ResetFnType, StepFnType]:
     def reset_fn(key: KeyType, switch_info: SwitchInfo) -> State:
+        switch_info = get_random_switch_info(key)
         return State(GRID_LAYOUT, 0.0, 0.0, switch_info)
     wall_fn = get_wall_fn(0)
     switch_fn = get_switch_fn(0)

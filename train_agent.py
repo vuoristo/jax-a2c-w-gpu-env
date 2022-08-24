@@ -1,3 +1,4 @@
+import time
 import functools
 import collections
 from collections.abc import Iterable
@@ -235,19 +236,20 @@ def collect_rollout_logs(
 def sample_and_update(
     key: KeyType,
     theta: Dict,
-    actor_output: Trajectory,
+    prev_timestep: Trajectory,
     opt_state,
     rollout_log: RolloutLog,
     rollout_fn: Callable,
     grad_fn: Callable,
     opt_update_fn: Callable,
-) -> tuple[Dict, Dict, LossLog, RolloutLog]:
-    trajs = rollout_fn(key, theta, actor_output)
+) -> tuple[Dict, Dict, Trajectory, LossLog, RolloutLog]:
+    trajs = rollout_fn(key, theta, prev_timestep)
+    new_timestep = jax.tree_map(lambda x: x[:, -1], trajs)
     rollout_log = collect_rollout_logs(trajs, rollout_log)
     grad, loss_log = grad_fn(theta, trajs)
     updates, new_opt_state = opt_update_fn(grad, opt_state)
     new_theta = optax.apply_updates(theta, updates)
-    return new_theta, new_opt_state, loss_log, rollout_log
+    return new_theta, new_opt_state, new_timestep, loss_log, rollout_log
 
 
 def trainable(
@@ -314,10 +316,20 @@ def trainable(
     )
     opt_state = opt_init_fn(theta)
     rollout_log = RolloutLog(*jnp.zeros((2, num_parallel_envs)), 0, 0, 0)
+    num_frames_per_iter = num_parallel_envs * config['H']
+    t0 = time.time()
     for i in range(config['stop_steps']):
         k1, k2 = jrandom.split(k1)
-        theta, opt_state, loss_log, rollout_log = sample_and_update_(
+        theta, opt_state, timestep, loss_log, rollout_log = sample_and_update_(
             k2, theta, timestep, opt_state, rollout_log)
+        if i % 100 == 0:
+            print(loss_log.entropy.mean(),
+                  rollout_log.final_ep_reward / rollout_log.ep_count,
+                  rollout_log.final_ep_len / rollout_log.ep_count,
+                  rollout_log.ep_count,
+                  100 * num_frames_per_iter / (time.time() - t0)
+            )
+            t0 = time.time()
 
 
 
@@ -333,12 +345,12 @@ if __name__ == '__main__':
             'head_layers': (),
             'num_actions': 4,
         },
-        'num_parallel_envs': 16,
+        'num_parallel_envs': 128,
         'H': 11,
 
         'vf_coef': 0.5,
         'ent_coef': 0.01,
-        'gamma': 0.99,
+        'gamma': 0.995,
 
         'opt_kwargs': {
             'learning_rate': 7E-4,
@@ -347,7 +359,8 @@ if __name__ == '__main__':
             'eps': 1E-8,
         },
 
-        'stop_steps': 1_000,
+        'stop_steps': 10_000,
         'seed': 0,
     }
+    # with jax.disable_jit():
     trainable(config, None)
