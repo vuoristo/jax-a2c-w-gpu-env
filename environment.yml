@@ -1,0 +1,22 @@
+name: gpua2c
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - pip=20.2.4
+  - python=3.9
+  - cudatoolkit-dev=11.1
+  - cudnn=8.2
+  - jupyter=1.0.0
+  - matplotlib=3.5.1
+  - numpy=1.21.2
+  - nbconvert=6.3.0
+  - jupyter_contrib_nbextensions=0.5.1
+  - pip:
+    - jax==0.3.1
+    - "https://storage.googleapis.com/jax-releases/cuda11/jaxlib-0.1.76+cuda11.cudnn82-cp39-none-manylinux2010_x86_64.whl"
+    - mujoco
+    - chex==0.1.2
+    - haiku==0.0.6
+    - rlax==0.1.2
+    - optax=0.1.1
